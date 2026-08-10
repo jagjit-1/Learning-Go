@@ -2,10 +2,16 @@
 #
 # Checks your exercises. Run from the "Learning Go" directory:
 #
-#   ./check.sh          # check everything
-#   ./check.sh 3        # check just 03_functions
-#   ./check.sh 03 07    # check a few
-#   ./check.sh -v       # show output for passing exercises too
+#   ./check.sh              # check everything
+#   ./check.sh 3            # check just 03_functions
+#   ./check.sh 03 07        # check a few
+#   ./check.sh basics       # exercises 01-09
+#   ./check.sh concurrency  # exercises 10-17
+#   ./check.sh -v           # show output for passing exercises too
+#
+# Everything runs under -race. In the concurrency set that is not optional:
+# a missing lock usually still produces the right answer, and the race
+# detector is the only thing that reliably says otherwise.
 #
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -13,7 +19,12 @@ cd "$(dirname "$0")"
 verbose=0
 args=()
 for a in "$@"; do
-  if [ "$a" = "-v" ]; then verbose=1; else args+=("$a"); fi
+  case "$a" in
+    -v)          verbose=1 ;;
+    basics)      args+=(01 02 03 04 05 06 07 08 09) ;;
+    concurrency) args+=(10 11 12 13 14 15 16 17) ;;
+    *)           args+=("$a") ;;
+  esac
 done
 
 # Resolve arguments like "3" or "03" or "03_functions" to directory names.
@@ -47,7 +58,7 @@ failed=()
 todo=()
 
 for d in "${dirs[@]}"; do
-  out=$(go test "./$d" 2>&1)
+  out=$(go test -race -timeout 180s "./$d" 2>&1)
   code=$?
 
   if [ $code -eq 0 ]; then

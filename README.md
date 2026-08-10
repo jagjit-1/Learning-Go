@@ -1,6 +1,7 @@
-# FAround — Go Basics, Hands-On
+# FAround — Go, Hands-On
 
-9 progressive exercises. Each folder = one `main.go` with:
+17 progressive exercises in two sets: **basics** (01–09) and **concurrency**
+(10–17). Each folder = one `main.go` with:
 1. A short **CONCEPT** comment block teaching the *new* syntax for that exercise (only what you need, nothing ahead).
 2. A `// TODO` scaffold — you write the code.
 3. An **EXPECTED OUTPUT** comment so you can self-verify without needing solutions.
@@ -15,6 +16,16 @@
 7. `07_interfaces` — implicit interface satisfaction, type switches
 8. `08_error_handling` — `error` as a value, custom error types
 9. `09_capstone_game` — number guessing game, combines everything above
+
+### Set B — concurrency (10–17)
+10. `10_goroutines_channels` — `go`, unbuffered vs buffered, close, range, directional types
+11. `11_select_timeouts` — select, `time.After`, non-blocking send/recv, the nil-channel trick
+12. `12_sync_primitives` — WaitGroup, Mutex, RWMutex, Once, sync/atomic
+13. `13_worker_pools` — bounded concurrency, ordered results, stopping early
+14. `14_pipelines_fanin_fanout` — stages, fan-out, fan-in, and goroutine leaks
+15. `15_context` — cancellation, deadlines, propagation, request-scoped values
+16. `16_race_detector` — what a data race is, and the three ways out
+17. `17_capstone_crawler` — bounded-concurrency crawler over an injected Fetcher
 
 ## How to run each one
 Once your Go toolchain is set up:
@@ -35,14 +46,24 @@ Or one exercise (`3`, `03`, and `03_functions` all work):
 ```bash
 ./check.sh 3
 ```
+Or a whole set:
+```bash
+./check.sh concurrency
+```
 Or from inside an exercise folder, using plain Go:
 ```bash
-go test
+go test -race
 ```
 Add `-v` to see the individual check names as they run:
 ```bash
-go test -v
+go test -race -v
 ```
+
+**Use `-race` from exercise 10 onward.** `check.sh` always does. A missing
+lock usually still produces the right answer on most runs — that's exactly
+what makes concurrency bugs dangerous, and the race detector is the only
+thing that reliably disagrees. Several checkers in set B would pass broken
+code without it.
 
 ### Reading the results
 - **PASS** — done, move on.
@@ -73,6 +94,27 @@ Two checkers are worth knowing about in advance:
 The unit tests in 09 assume the suggested `Game`/`NewGame`/`Guess` structure.
 If you designed something different, delete them and keep `TestEndToEnd`,
 which only cares about observable behaviour.
+
+### Extra notes for the concurrency set
+
+- **Deadlocks fail fast.** Every check in 10–17 runs under a deadline, so a
+  blocked send or a channel you forgot to close gives you a named failure in
+  a few seconds rather than a hung terminal. The message names the usual
+  cause.
+- **Some checks measure real concurrency.** 13, 14 and 17 count how many of
+  your goroutines were inside the work function at the same moment, so
+  "bounded to N workers" is verified, not assumed.
+- **14 and 17 count goroutines.** They run the same scenario many times over
+  and compare live goroutine counts before and after. A stage parked forever
+  on a send shows up as a steady climb. A goroutine blocked on a channel is
+  never collected — the runtime cannot tell it apart from a busy one.
+- **16 ships a deliberately broken function.** `racyCount` is racy on
+  purpose and no test calls it. To watch the detector fire:
+  ```bash
+  SHOW_RACE=1 go run -race .
+  ```
+  Read both stack traces in the report — they're the two goroutines that
+  collided.
 
 ## Workflow (this is the actual learning part, not the typing)
 1. Read the CONCEPT block.
