@@ -75,9 +75,22 @@ import "fmt"
 // TODO 1: write `func produce(n int, out chan<- int)` that sends 1, 2, ... n
 // into `out` and then CLOSES it. Note the send-only type — try adding a
 // receive from `out` inside it and read the compile error.
+func produce(n int, anything chan<- int) {
+	for i := range n {
+		anything <- i + 1
+	}
+	close(anything)
+}
 
 // TODO 2: write `func collect(in <-chan int) []int` that ranges over `in`
 // until it's closed and returns everything it received.
+func collect(in <-chan int) []int {
+	nums := []int{}
+	for val := range in {
+		nums = append(nums, val)
+	}
+	return nums
+}
 
 // TODO 3: write `func square(in <-chan int) <-chan int`. It must create its
 // own output channel, start a goroutine that reads every value from `in`,
@@ -85,30 +98,96 @@ import "fmt"
 // RETURN THE CHANNEL IMMEDIATELY — before any work is done.
 // This shape (make a channel, go func, return it) is the backbone of every
 // pipeline you'll write in Exercise 14.
+func square(in <-chan int) <-chan int {
+	out := make(chan int)
+	go func() {
+		for val := range in {
+			out <- (val * val)
+		}
+		close(out)
+	}()
+
+	return out
+}
 
 // TODO 4: write `func sumConcurrent(nums []int) int` that splits nums in half,
 // sums each half in its own goroutine, and combines the two partial sums
 // through a channel. Must return 0 for an empty slice.
+func sum(nums []int, out chan<- int) {
+	total := 0
+	for _, val := range nums {
+		total += val
+	}
+	out <- total
+	close(out)
+	return
+}
+
+func sumConcurrent(nums []int) int {
+	total := 0
+	half1 := make(chan int)
+	half2 := make(chan int)
+
+	var mid int = len(nums) / 2
+	go sum(nums[:mid], half1)
+	go sum(nums[mid:], half2)
+
+	sum1, ok1 := <-half1
+	sum2, ok2 := <-half2
+
+	if ok1 {
+		total += sum1
+	}
+
+	if ok2 {
+		total += sum2
+	}
+
+	return total
+}
 
 // TODO 5: write `func recvClosed() (int, bool)` that makes a channel, closes
 // it immediately, then does a two-value receive and returns both. This proves
 // to you what a receive on a closed channel actually gives back.
+func recvClosed() (int, bool) {
+	in := make(chan int)
+	close(in)
+	x, y := <-in
+	return x, y
+}
 
 func main() {
 	// TODO 6: use produce + collect together. produce blocks on an unbuffered
 	// channel, so ONE of them has to run in a goroutine — work out which, and
 	// try it the other way round to see the deadlock. Print the collected slice.
-
+	out := make(chan int)
+	go produce(5, out)
+	nums := collect(out)
+	fmt.Println(nums)
 	// TODO 7: chain produce into square into collect. Print the squares.
-
+	out1 := make(chan int)
+	go produce(5, out1)
+	sqout := square(out1)
+	nums = collect(sqout)
+	fmt.Println(nums)
 	// TODO 8: print sumConcurrent for 1..10.
-
+	nums = []int{}
+	for i := 0; i < 10; i++ {
+		nums = append(nums, i+1)
+	}
+	fmt.Println(sumConcurrent(nums))
 	// TODO 9: print the two values recvClosed returns.
-
+	x, y := recvClosed()
+	fmt.Println(x, y)
 	// TODO 10: make a buffered channel of capacity 3, send two values, and
 	// print len and cap. Then drain it and print len and cap again.
-
-	fmt.Print()
+	buffchan := make(chan int, 3)
+	buffchan <- 1
+	buffchan <- 2
+	fmt.Printf("len=%d cap=%d", len(buffchan), cap(buffchan))
+	_ = <-buffchan
+	_ = <-buffchan
+	fmt.Printf("len=%d cap=%d", len(buffchan), cap(buffchan))
 }
 
 // EXPECTED OUTPUT:

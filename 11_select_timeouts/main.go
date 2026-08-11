@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"time"
 )
 
 // ============================================================
@@ -94,44 +96,166 @@ import (
 
 // TODO 1: write `func first(a, b <-chan string) string` that returns the first
 // value to arrive on either channel, and ignores the other.
+func first(a, b <-chan string) string {
+	res := ""
+	select {
+	case val := <-a:
+		res = val
+	case val := <-b:
+		res = val
+	}
+	return res
+}
 
 // TODO 2: declare a sentinel `var ErrTimeout = errors.New("timed out")` and
 // write `func recvWithTimeout(ch <-chan int, d time.Duration) (int, error)`.
 // It returns (value, nil) if something arrives within d, or (0, ErrTimeout)
 // if not. A sentinel like this is what lets callers use errors.Is.
+func recvWithTimeout(ch <-chan int, d time.Duration) (int, error) {
+	select {
+	case val := <-ch:
+		return val, nil
+	case <-time.After(d):
+		return 0, ErrTimeout
+	}
+}
+
+var ErrTimeout = errors.New("timed out")
 
 // TODO 3: write `func trySend(ch chan<- int, v int) bool` — a non-blocking
 // send. Returns true if the value went in, false if it would have blocked.
+func trySend(ch chan<- int, v int) bool {
+	select {
+	case ch <- v:
+		return true
+	default:
+		return false
+	}
+}
 
 // TODO 4: write `func tryRecv(ch <-chan int) (int, bool)` — a non-blocking
 // receive. CAREFUL: a closed channel is always ready, so a plain `<-ch` would
 // report success and hand you a zero. Use the two-value form INSIDE the case
 // (`case v, ok := <-ch:`) so a closed channel returns (0, false), same as an
 // empty one.
+func tryRecv(ch <-chan int) (int, bool) {
+	select {
+	case v, ok := <-ch:
+		return v, ok
+	default:
+		return 0, false
+	}
+}
 
 // TODO 5: write `func merge2(a, b <-chan int, done <-chan struct{}) []int`.
 // Collect every value from both channels until BOTH are closed, then return
 // what you gathered. If `done` is closed first, return early with whatever
 // you have. Use the nil-channel trick above — if you skip it, the first
 // channel to close will spin the loop.
+func merge2(a, b <-chan int, done <-chan struct{}) []int {
+	res := []int{}
+
+	for a != nil || b != nil {
+		select {
+		case val, ok := <-a:
+			if !ok {
+				a = nil
+				continue
+			}
+			res = append(res, val)
+		case val, ok := <-b:
+			if !ok {
+				b = nil
+				continue
+			}
+			res = append(res, val)
+		case _, ok := <-done:
+			if !ok {
+				return res
+			}
+		}
+	}
+	return res
+}
+
+func returnAfterDuration(ch chan<- string, val string, duration time.Duration) {
+	select {
+	case <-time.After(duration):
+		ch <- val
+		close(ch)
+	}
+}
+
+func returnAfterDurationInt(ch chan<- int, val int, duration time.Duration) {
+	select {
+	case <-time.After(duration):
+		ch <- val
+		close(ch)
+	}
+}
+
+func makeNumbStream(ch chan<- int, n int) {
+	for i := range n {
+		ch <- i
+	}
+	close(ch)
+}
 
 func main() {
 	// TODO 6: start two goroutines that sleep for different durations and then
 	// send their name. Print the winner from first().
-
+	ch1 := make(chan string)
+	ch2 := make(chan string)
+	go returnAfterDuration(ch1, "fast", 2)
+	go returnAfterDuration(ch2, "fast", 4)
+	val := first(ch1, ch2)
+	fmt.Println(val)
 	// TODO 7: call recvWithTimeout twice — once against a channel that gets a
 	// value quickly (print the value), once against one that never does (print
 	// the error).
+	ch3 := make(chan int)
+	go returnAfterDurationInt(ch3, 42, time.Second*1)
+
+	res, err := recvWithTimeout(ch3, time.Second*2)
+	if err == ErrTimeout {
+		fmt.Println(err)
+	} else {
+		fmt.Println(res)
+	}
+
+	ch4 := make(chan int)
+	go returnAfterDurationInt(ch4, 35, time.Second*4)
+
+	res, err = recvWithTimeout(ch4, time.Second*2)
+	if err == ErrTimeout {
+		fmt.Println(err)
+	} else {
+		fmt.Println(res)
+	}
 
 	// TODO 8: make a buffered channel of capacity 1. trySend twice and print
 	// both results — the second should be false.
-
+	ch5 := make(chan int, 1)
+	sent := trySend(ch5, 5)
+	fmt.Println(sent)
+	sent = trySend(ch5, 2)
+	fmt.Println(sent)
 	// TODO 9: tryRecv from an empty channel and print both return values.
-
+	ch6 := make(chan int)
+	rec, ok := tryRecv(ch6)
+	fmt.Println(rec, ok)
 	// TODO 10: feed two channels from two goroutines, close both, and print
 	// the merged length from merge2 (with a `done` you never close).
+	ch7 := make(chan int)
+	ch8 := make(chan int)
+	done := make(chan struct{})
 
-	fmt.Print()
+	go makeNumbStream(ch7, 3)
+	go makeNumbStream(ch8, 3)
+
+	result := merge2(ch7, ch8, done)
+
+	fmt.Println(len(result))
 }
 
 // EXPECTED OUTPUT:
