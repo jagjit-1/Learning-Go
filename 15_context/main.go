@@ -1,6 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+	"sync"
+	"time"
+)
 
 // ============================================================
 // CONCEPT: context.Context — cancellation that propagates
@@ -79,43 +86,150 @@ import "fmt"
 // TODO 1: write `func doWork(ctx context.Context, d time.Duration) error`
 // that simulates work taking d, and returns nil if it finished, or ctx.Err()
 // if the context was cancelled first.
+func doWork(ctx context.Context, d time.Duration) error {
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return nil
+}
 
 // TODO 2: write
-//   func sumWithContext(ctx context.Context, nums []int, per time.Duration) (int, error)
+//
+//	func sumWithContext(ctx context.Context, nums []int, per time.Duration) (int, error)
+//
 // that adds up nums, taking `per` for each element, and gives up as soon as
 // the context is done — returning (partial sum so far, ctx.Err()).
+func sumWithContext(ctx context.Context, nums []int, per time.Duration) (int, error) {
+	total := 0
+	for _, n := range nums {
+		select {
+		case <-time.After(per):
+			total += n
+		case <-ctx.Done():
+			return total, ctx.Err()
+		}
+	}
+
+	return total, nil
+}
 
 // TODO 3: request IDs. Define an UNEXPORTED key type, then
-//   func WithRequestID(ctx context.Context, id string) context.Context
-//   func RequestID(ctx context.Context) (string, bool)
+//
+//	func WithRequestID(ctx context.Context, id string) context.Context
+//	func RequestID(ctx context.Context) (string, bool)
+//
 // RequestID returns ("", false) when there's no ID on the context.
+func WithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestID{}, id)
+}
+
+func RequestID(ctx context.Context) (string, bool) {
+	val, ok := ctx.Value(requestID{}).(string)
+	return val, ok
+}
+
+type requestID struct{}
 
 // TODO 4: write
-//   func fetchAll(ctx context.Context, ids []int,
-//                 fetch func(context.Context, int) (string, error)) ([]string, error)
+//
+//	func fetchAll(ctx context.Context, ids []int,
+//	              fetch func(context.Context, int) (string, error)) ([]string, error)
+//
 // Fetch every id CONCURRENTLY (one goroutine each is fine here). Results come
 // back in the order of `ids`, not completion order. If any fetch fails,
 // return that error and make sure the others are cancelled — derive a
 // cancellable child context and pass THAT to fetch, not the parent.
+func fetchAll(ctx context.Context, ids []int, fetch func(context.Context, int) (string, error)) ([]string, error) {
+	childCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	result := make([]string, len(ids))
+	var resErr error
+	var wg sync.WaitGroup
+	for idx, id := range ids {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			val, err := fetch(childCtx, id)
+			if err != nil {
+				resErr = err
+				cancel()
+				return
+			}
+
+			result[idx] = val
+		}()
+	}
+	wg.Wait()
+	return result, resErr
+}
 
 func main() {
 	// TODO 5: doWork with 20ms of work and a 1s timeout — print the error
 	// (which should be <nil>).
-
+	ctx, cancel := context.WithTimeout(context.TODO(), time.Second)
+	defer cancel()
+	err := doWork(ctx, time.Millisecond*20)
+	fmt.Println(err)
 	// TODO 6: doWork with 1s of work and a 50ms timeout — print the error.
-
+	ctx1, cancel1 := context.WithTimeout(context.TODO(), time.Millisecond*50)
+	defer cancel1()
+	err1 := doWork(ctx1, time.Second)
+	fmt.Println(err1)
 	// TODO 7: WithCancel, cancel it immediately, then doWork — print the error.
 	// Note it's a different error from TODO 6.
-
+	ctx2, cancel2 := context.WithTimeout(context.TODO(), time.Millisecond*50)
+	cancel2()
+	err2 := doWork(ctx2, time.Second)
+	fmt.Println(err2)
 	// TODO 8: sumWithContext over 1..100 at 1ms each with a 20ms timeout —
 	// print the partial sum and the error.
-
+	nums := []int{}
+	for i := range 100 {
+		nums = append(nums, i+1)
+	}
+	ctx3, cancel3 := context.WithTimeout(context.TODO(), time.Millisecond*20)
+	defer cancel3()
+	parSum, err := sumWithContext(ctx3, nums, time.Millisecond)
+	fmt.Println(parSum, err)
 	// TODO 9: put a request ID on a context, read it back, and print it.
 	// Then read from a bare context.Background() and print the ok flag.
+	ctx4 := WithRequestID(context.TODO(), "req-42")
+	val, ok := RequestID(ctx4)
 
+	fmt.Println(val, ok)
+
+	val, ok = RequestID(context.Background())
+	fmt.Println(val, ok)
 	// TODO 10: fetchAll over ids 1..5 with a fetch that succeeds — print the
 	// results. Then one where id 3 fails — print the error.
+	nums1 := []int{}
+	for i := range 5 {
+		nums1 = append(nums1, i+1)
+	}
 
+	succ := func(ctx context.Context, n int) (string, error) {
+		return "item-" + strconv.Itoa(n), nil
+	}
+	fail := func(ctx context.Context, n int) (string, error) {
+		if n == 3 {
+			return "", errors.New("fetch 3 failed")
+		}
+		return "item-" + strconv.Itoa(n), nil
+	}
+
+	val1, ok1 := fetchAll(context.TODO(), nums1, succ)
+	if ok1 == nil {
+		fmt.Println(val1)
+	}
+
+	_, ok2 := fetchAll(context.TODO(), nums1, fail)
+	if ok2 != nil {
+		fmt.Println(ok2)
+	}
 	fmt.Print()
 }
 

@@ -1,6 +1,10 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"sync"
+)
 
 // ============================================================
 // CONCEPT: pipelines, fan-out, fan-in — and goroutine leaks
@@ -90,37 +94,180 @@ import "fmt"
 // mechanism underneath is exactly this select.)
 
 // TODO 1: write `func gen(nums ...int) <-chan int` — the generator above.
+func gen(nums ...int) <-chan int {
+	out := make(chan int)
+	go func() {
+		defer close(out)
+		for _, val := range nums {
+			out <- val
+		}
+	}()
+	return out
+}
 
 // TODO 2: write `func sq(in <-chan int) <-chan int` — squares every value.
+func sq(in <-chan int) <-chan int {
+	out := make(chan int)
+	go func() {
+		defer close(out)
+		for n := range in {
+			out <- n * n
+		}
+	}()
+	return out
+}
 
 // TODO 3: write `func merge(cs ...<-chan int) <-chan int` — fan-in. It must
 // work for zero channels too (return a channel that's simply closed).
+func merge(cs ...<-chan int) <-chan int {
+	var wg sync.WaitGroup
+	out := make(chan int)
+
+	for _, c := range cs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for in := range c {
+				out <- in
+			}
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	return out
+}
 
 // TODO 4: write `func pipeline(nums []int, fanOut int) []int` that runs
 // gen -> `fanOut` parallel sq stages -> merge, and collects everything into a
 // slice. Order will not match the input — that's expected, the checker sorts.
 // Treat fanOut <= 0 as 1.
+func pipeline(nums []int, fanOut int) []int {
+	if fanOut <= 0 {
+		fanOut = 1
+	}
+
+	in := gen(nums...)
+	outChans := []<-chan int{}
+	for range fanOut {
+		outChans = append(outChans, sq(in))
+	}
+	res := []int{}
+	for out := range merge(outChans...) {
+		res = append(res, out)
+	}
+	return res
+}
+
+func pipelineDone(nums []int, fanOut int, done chan struct{}) <-chan int {
+	if fanOut <= 0 {
+		fanOut = 1
+	}
+
+	in := genDone(done, nums...)
+	outChans := []<-chan int{}
+	for range fanOut {
+		outChans = append(outChans, sqDone(done, in))
+	}
+
+	return merge(outChans...)
+}
 
 // TODO 5: now the leak-free versions. Write
-//   func genDone(done <-chan struct{}, nums ...int) <-chan int
-//   func sqDone(done <-chan struct{}, in <-chan int) <-chan int
+//
+//	func genDone(done <-chan struct{}, nums ...int) <-chan int
+//	func sqDone(done <-chan struct{}, in <-chan int) <-chan int
+//
 // Same as TODOs 1 and 2, but every send is a select against `done`.
+func genDone(done <-chan struct{}, nums ...int) <-chan int {
+	out := make(chan int)
+
+	go func() {
+		defer close(out)
+
+		for _, n := range nums {
+			select {
+			case out <- n:
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	return out
+}
+
+func sqDone(done <-chan struct{}, in <-chan int) <-chan int {
+	out := make(chan int)
+
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case val, ok := <-in:
+				if !ok {
+					return
+				}
+				out <- val * val
+			case <-done:
+				return
+			}
+		}
+	}()
+	return out
+}
 
 // TODO 6: write `func firstN(in <-chan int, n int, done chan struct{}) []int`
 // that takes n values and then CLOSES done to shut the pipeline behind it.
 // Close it with `defer close(done)` so an early return still cleans up.
 // If `in` runs dry first, return what you got. For n <= 0 return empty
 // without receiving anything at all.
+func firstN(in <-chan int, n int, done chan struct{}) []int {
+	res := []int{}
+	if n == 0 {
+		return res
+	}
+	defer close(done)
+	cnt := 0
+	for val := range in {
+		cnt++
+		res = append(res, val)
+
+		if cnt == n {
+			return res
+		}
+	}
+
+	return res
+}
 
 func main() {
 	// TODO 7: print the sorted output of pipeline over 1..8 with fanOut 3.
 	// (sort.Ints is in the "sort" package.)
+	input := []int{}
+	for i := range 8 {
+		input = append(input, i+1)
+	}
+
+	output := pipeline(input, 3)
+	sort.Ints(output)
+	fmt.Println(output)
 
 	// TODO 8: build a done-aware pipeline over 1..1000, take only the first 3
 	// values with firstN, and print them. Everything upstream should shut
 	// down instead of blocking forever on a send nobody will receive.
+	input2 := []int{}
+	done := make(chan struct{})
+	for i := range 1000 {
+		input2 = append(input2, i+1)
+	}
 
-	fmt.Print()
+	// Fanout needs to be 1 here because the order otherwise is undeterministic
+	res := firstN(pipelineDone(input2, 1, done), 3, done)
+	fmt.Println(res)
 }
 
 // EXPECTED OUTPUT:

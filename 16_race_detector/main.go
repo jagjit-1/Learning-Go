@@ -1,6 +1,13 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"slices"
+	"strconv"
+	"sync"
+	"sync/atomic"
+)
 
 // ============================================================
 // CONCEPT: data races, and the three ways out
@@ -73,42 +80,185 @@ import "fmt"
 // `counter++` on ONE shared int with nothing protecting it, a WaitGroup to
 // wait for them. This one is MEANT to be broken. Run `SHOW_RACE=1 go run -race .`
 // and read the report before you go any further.
+func racyCount(n int) int {
+	count := 0
+	var wg sync.WaitGroup
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			count++
+		}()
+	}
+
+	wg.Wait()
+	return count
+}
 
 // TODO 2: write `func countMutex(n int) int` — same thing, correct, using
 // sync.Mutex.
+func countMutex(n int) int {
+	count := 0
+	var wg sync.WaitGroup
+	var mut sync.Mutex
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer mut.Unlock()
+
+			mut.Lock()
+			count++
+		}()
+	}
+
+	wg.Wait()
+	return count
+}
 
 // TODO 3: write `func countAtomic(n int) int` — same thing with an
 // atomic.Int64 and no lock at all.
+func countAtomic(n int) int {
+	var count atomic.Int64
+	var wg sync.WaitGroup
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			count.Add(1)
+		}()
+	}
+
+	wg.Wait()
+	return int(count.Load())
+}
 
 // TODO 4: write `func countChannel(n int) int` — same thing with no shared
 // variable whatsoever: each goroutine sends 1 on a channel and a single
 // collector adds them up. This is fix #1, "don't share".
+func countChannel(n int) int {
+	var wg sync.WaitGroup
+	ch := make(chan int)
+
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch <- 1
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	count := 0
+	for range ch {
+		count++
+	}
+	return count
+}
 
 // TODO 5: write `func appendConcurrent(n int) []int` — n goroutines each
 // appending their own index to one shared slice. append READS the slice
 // header, may reallocate, and WRITES it back, so it needs the same protection
 // an int does. Order doesn't matter; all n values must survive.
+func appendConcurrent(n int) []int {
+	nums := []int{}
+	var wg sync.WaitGroup
+	var mut sync.Mutex
+
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer mut.Unlock()
+			mut.Lock()
+			nums = append(nums, i)
+		}()
+	}
+
+	wg.Wait()
+	return nums
+}
 
 // TODO 6: define `type Registry` holding a map[string]int and a sync.RWMutex,
 // with `NewRegistry() *Registry`, `Register(name string)` (bumps that name's
 // count), `Count() int` (how many distinct names), and `Names() []string`
 // returning a SORTED COPY of the keys. Returning the live map or an
 // unsorted view of it defeats the lock.
+type Registry struct {
+	Value map[string]int
+	Mut   sync.Mutex
+}
+
+func NewRegistry() *Registry {
+	return &Registry{Value: map[string]int{}}
+}
+
+func (reg *Registry) Register(name string) {
+	reg.Mut.Lock()
+	defer reg.Mut.Unlock()
+
+	reg.Value[name]++
+}
+
+func (reg *Registry) Count() int {
+	reg.Mut.Lock()
+	defer reg.Mut.Unlock()
+	count := 0
+	for range reg.Value {
+		count++
+	}
+
+	return count
+}
+
+func (reg *Registry) Names() []string {
+	reg.Mut.Lock()
+	defer reg.Mut.Unlock()
+	res := []string{}
+	for key := range reg.Value {
+		res = append(res, key)
+	}
+	slices.Sort(res)
+	return res
+}
 
 func main() {
 	// TODO 7: if os.Getenv("SHOW_RACE") != "", call racyCount(1000) and print
 	// the result, then return. Leave it out of the normal path so the rest of
 	// the program stays race-free.
+	if os.Getenv("SHOW_RACE") != "" {
+		fmt.Println(racyCount(1000))
+	}
 
 	// TODO 8: print countMutex(1000), countAtomic(1000) and countChannel(1000).
 	// All three must print 1000, every time.
-
+	fmt.Println(countMutex(1000))
+	fmt.Println(countAtomic(1000))
+	fmt.Println(countChannel(1000))
 	// TODO 9: print len(appendConcurrent(500)).
-
+	fmt.Println(len(appendConcurrent(500)))
 	// TODO 10: register 200 distinct names concurrently and print Count(),
 	// then print the first entry from Names().
+	registry := NewRegistry()
+	var wg sync.WaitGroup
+	for i := range 200 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			registry.Register("name-" + strconv.Itoa(i))
+		}()
+	}
 
-	fmt.Print()
+	wg.Wait()
+	fmt.Println(registry.Count())
+	names := registry.Names()
+	fmt.Println(names[0])
 }
 
 // EXPECTED OUTPUT (with SHOW_RACE unset):
