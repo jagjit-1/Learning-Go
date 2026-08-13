@@ -147,6 +147,7 @@ func fetchAll(ctx context.Context, ids []int, fetch func(context.Context, int) (
 	defer cancel()
 
 	result := make([]string, len(ids))
+	var once sync.Once
 	var resErr error
 	var wg sync.WaitGroup
 	for idx, id := range ids {
@@ -155,8 +156,10 @@ func fetchAll(ctx context.Context, ids []int, fetch func(context.Context, int) (
 			defer wg.Done()
 			val, err := fetch(childCtx, id)
 			if err != nil {
-				resErr = err
-				cancel()
+				once.Do(func() {
+					resErr = err
+					cancel()
+				})
 				return
 			}
 

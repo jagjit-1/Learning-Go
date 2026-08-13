@@ -205,13 +205,9 @@ func sqDone(done <-chan struct{}, in <-chan int) <-chan int {
 
 	go func() {
 		defer close(out)
-		for {
+		for i := range in {
 			select {
-			case val, ok := <-in:
-				if !ok {
-					return
-				}
-				out <- val * val
+			case out <- i * i:
 			case <-done:
 				return
 			}
