@@ -2,7 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 )
 
 // ============================================================
@@ -83,16 +87,216 @@ import (
 // Errors must be non-nil (an empty map) even when nothing failed, so callers
 // can range over it without a nil check.
 
+type ConcurrentMap struct {
+	Mut   sync.Mutex
+	Value map[string]struct{}
+}
+
+func (cm *ConcurrentMap) Store(key string) bool {
+	cm.Mut.Lock()
+	defer cm.Mut.Unlock()
+	_, ok := cm.Value[key]
+
+	if ok {
+		return false
+	}
+
+	cm.Value[key] = struct{}{}
+	return true
+}
+
+type Fetcher interface {
+	Fetch(ctx context.Context, url string) (title string, links []string, err error)
+}
+
+type InMemoryFetcher struct {
+	UrlTitleMapping map[string]string
+	UrlLinksMapping map[string][]string
+}
+
+func (f *InMemoryFetcher) Fetch(ctx context.Context, url string) (title string, links []string, err error) {
+	title, ok := f.UrlTitleMapping[url]
+
+	if !ok {
+		return "", []string{}, errors.New("Invalid url")
+	}
+
+	links, linksFound := f.UrlLinksMapping[url]
+
+	if !linksFound {
+		return title, []string{}, nil
+	}
+
+	return title, links, nil
+}
+
+type Page struct {
+	URL   string
+	Title string
+	Depth int
+}
+
+type PageResult struct {
+	Page Page
+	Err  error
+}
+
+type Crawler struct {
+	Fetcher  Fetcher
+	Workers  int
+	MaxDepth int
+}
+
+type Result struct {
+	Pages  []Page
+	Errors map[string]error
+}
+
+func ProduceJobs(depth int, links []string, out chan<- Job, seen *ConcurrentMap, wg *sync.WaitGroup) {
+	for _, link := range links {
+		ok := seen.Store(link)
+
+		if ok {
+			wg.Add(1)
+			out <- Job{depth: depth, url: link}
+		}
+	}
+}
+
+func ProduceResult(title string, url string, depth int, pages chan<- PageResult, err error) {
+	page := Page{Title: title, URL: url, Depth: depth}
+	res := PageResult{Page: page, Err: err}
+	pages <- res
+}
+
+// Fetch Job Executer
+func FetchJobExecuter(ctx context.Context, crawler *Crawler, pages chan PageResult, jobs chan Job, workers int, wg *sync.WaitGroup, seen *ConcurrentMap) {
+	gate := make(chan struct{}, workers)
+
+	for job := range jobs {
+		go func() {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				title, links, err, ok := FetchJob(ctx, crawler, job.url, pages, gate)
+
+				if ok {
+					ProduceResult(title, job.url, job.depth, pages, err)
+
+					if job.depth < crawler.MaxDepth && err == nil {
+						ProduceJobs(job.depth+1, links, jobs, seen, wg)
+					}
+				}
+			}
+		}()
+	}
+
+}
+
+func FetchJob(ctx context.Context, crawler *Crawler, url string, pages chan PageResult, gate chan struct{}) (string, []string, error, bool) {
+	// Fetch page
+	select {
+	case gate <- struct{}{}:
+		title, links, err := crawler.Fetcher.Fetch(ctx, url)
+		<-gate
+		return title, links, err, true
+	case <-ctx.Done():
+		return "", []string{}, nil, false
+	}
+}
+
+func (crawler *Crawler) Crawl(ctx context.Context, start string) Result {
+	workers := 1
+	if crawler.Workers > 0 {
+		workers = crawler.Workers
+	}
+
+	jobs := make(chan Job)
+	pages := make(chan PageResult)
+	seen := ConcurrentMap{Value: make(map[string]struct{})}
+
+	var wg sync.WaitGroup
+
+	go FetchJobExecuter(ctx, crawler, pages, jobs, workers, &wg, &seen)
+
+	wg.Add(1)
+	seen.Store(start)
+	jobs <- Job{url: start}
+
+	go func() {
+		wg.Wait()
+		defer close(jobs)
+		defer close(pages)
+	}()
+
+	results := Result{Errors: make(map[string]error)}
+
+	for page := range pages {
+		if page.Err != nil {
+			results.Errors[page.Page.URL] = page.Err
+		} else {
+			results.Pages = append(results.Pages, page.Page)
+		}
+	}
+	slices.SortFunc(results.Pages, func(a Page, b Page) int {
+		return strings.Compare(a.URL, b.URL)
+	})
+	return results
+}
+
+type Job struct {
+	url   string
+	depth int
+}
+
+func newGraphFetcher() *InMemoryFetcher {
+	return &InMemoryFetcher{
+		UrlTitleMapping: map[string]string{
+			"A": "Home",
+			"B": "About",
+			"C": "Blog",
+			"D": "Post1",
+		},
+		UrlLinksMapping: map[string][]string{
+			"A": {"B", "C", "missing"}, // "missing" -> error, cycle via C->A
+			"B": {"A"},                 // cycle back to start
+			"C": {"D", "A"},            // cycle back to start
+			"D": {},
+		},
+	}
+}
+
 func main() {
 	// TODO: build a small in-memory Fetcher of your own — a
 	// map[string]struct{Title string; Links []string} is plenty — and crawl
 	// it. Print the number of pages found, then each page as
 	// "<depth> <url> <title>".
-	//
+	crawler := &Crawler{MaxDepth: 3, Fetcher: newGraphFetcher(), Workers: 3}
+	res := crawler.Crawl(context.Background(), "A")
+	fmt.Println(len(res.Pages))
+	for _, page := range res.Pages {
+		if res.Errors[page.URL] == nil {
+			fmt.Println(page.Depth, page.URL, page.Title)
+		}
+	}
 	// Then try it again with MaxDepth 0 and confirm you get exactly one page,
 	// and with a context that times out mid-crawl.
+	crawler1 := &Crawler{MaxDepth: 0, Fetcher: newGraphFetcher(), Workers: 10}
+	res1 := crawler1.Crawl(context.Background(), "A")
 
-	_ = context.Background()
+	if len(res1.Pages) != 1 {
+		fmt.Println("Validation for depth 0 failed")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 0)
+	cancel()
+	res2 := crawler.Crawl(ctx, "A")
+
+	if len(res2.Pages) != 0 {
+		fmt.Println("Validation for ctx cancel failed")
+	}
 	fmt.Print()
 }
 
