@@ -1,7 +1,7 @@
 # FAround — Go, Hands-On
 
-17 progressive exercises in two sets: **basics** (01–09) and **concurrency**
-(10–17). Each folder = one `main.go` with:
+25 progressive exercises in three sets: **basics** (01–09), **concurrency**
+(10–17) and **practitioner** (18–25). Each folder = one `main.go` with:
 1. A short **CONCEPT** comment block teaching the *new* syntax for that exercise (only what you need, nothing ahead).
 2. A `// TODO` scaffold — you write the code.
 3. An **EXPECTED OUTPUT** comment so you can self-verify without needing solutions.
@@ -27,6 +27,16 @@
 16. `16_race_detector` — what a data race is, and the three ways out
 17. `17_capstone_crawler` — bounded-concurrency crawler over an injected Fetcher
 
+### Set C — practitioner (18–25)
+18. `18_generics` — type parameters, constraints, `~`, `comparable`, generic types
+19. `19_io_interfaces` — io.Reader/Writer, wrapping, bufio and the Flush trap
+20. `20_json` — struct tags, omitempty, custom marshallers, absent vs zero
+21. `21_embedding` — promotion, shadowing, and why there is no virtual dispatch
+22. `22_testing_benchmarks` — table-driven tests, `b.N`, measuring allocations
+23. `23_http_client` — clients with timeouts, contexts, status vs error
+24. `24_http_server` — handlers, Go 1.22 routing, middleware, httptest
+25. `25_capstone_json_api` — a concurrent in-memory REST API, end to end
+
 ## How to run each one
 Once your Go toolchain is set up:
 ```bash
@@ -46,7 +56,7 @@ Or one exercise (`3`, `03`, and `03_functions` all work):
 ```bash
 ./check.sh 3
 ```
-Or a whole set:
+Or a whole set — `basics`, `concurrency`, `practitioner`:
 ```bash
 ./check.sh concurrency
 ```
@@ -115,6 +125,20 @@ which only cares about observable behaviour.
   ```
   Read both stack traces in the report — they're the two goroutines that
   collided.
+
+### Extra notes for the practitioner set
+
+- **22 runs your benchmarks.** `testing.Benchmark` is called on the functions
+  you write, and the checker compares allocations per operation between the
+  naive and the `strings.Builder` implementation. It also catches a benchmark
+  that ignores `b.N` — the reported ns/op comes out impossibly small.
+- **23, 24 and 25 never touch the network.** Everything runs against
+  `httptest` servers on localhost. That's the reason those functions take a
+  URL rather than building one from a constant: it is what makes them
+  testable at all.
+- **`-race` still matters in 24 and 25.** An HTTP server runs every request
+  in its own goroutine, so a store behind a handler is shared state whether
+  you planned for it or not.
 
 ## Workflow (this is the actual learning part, not the typing)
 1. Read the CONCEPT block.

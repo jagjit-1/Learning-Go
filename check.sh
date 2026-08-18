@@ -7,6 +7,7 @@
 #   ./check.sh 03 07        # check a few
 #   ./check.sh basics       # exercises 01-09
 #   ./check.sh concurrency  # exercises 10-17
+#   ./check.sh practitioner # exercises 18-25
 #   ./check.sh -v           # show output for passing exercises too
 #
 # Everything runs under -race. In the concurrency set that is not optional:
@@ -23,6 +24,7 @@ for a in "$@"; do
     -v)          verbose=1 ;;
     basics)      args+=(01 02 03 04 05 06 07 08 09) ;;
     concurrency) args+=(10 11 12 13 14 15 16 17) ;;
+    practitioner) args+=(18 19 20 21 22 23 24 25) ;;
     *)           args+=("$a") ;;
   esac
 done

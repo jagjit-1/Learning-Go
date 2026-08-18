@@ -28,8 +28,8 @@ func main() {
 	fmt.Println(nums) // [999 20] - still sharing the array
 
 	nums = append(nums, 30) // exceeds cap 2 -> reallocates
-	sub[0] = 111             // mutates the OLD array, which nums no longer points to
-	fmt.Println(nums)        // [999 20 30] - unaffected this time
+	sub[0] = 111            // mutates the OLD array, which nums no longer points to
+	fmt.Println(nums)       // [999 20 30] - unaffected this time
 
 	result := removeSong(playlist, 1)
 	fmt.Println(result)
