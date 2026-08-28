@@ -1,6 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"bufio"
+	"bytes"
+	"fmt"
+	"io"
+	"strings"
+)
 
 // ============================================================
 // CONCEPT: io.Reader and io.Writer — the two interfaces that matter
@@ -74,42 +80,132 @@ import "fmt"
 // TODO 1: write `type CountingWriter struct { W io.Writer; N int64 }` with a
 // pointer-receiver `Write` that delegates to W and adds to N. Count the bytes
 // W reports, not len(p), and return W's error untouched.
+type CountingWriter struct {
+	W io.Writer
+	N int64
+}
+
+func (cw *CountingWriter) Write(p []byte) (int, error) {
+	n, err := cw.W.Write(p)
+	cw.N += int64(n)
+	return n, err
+}
 
 // TODO 2: write `func CountLines(r io.Reader) (int, error)` using a
 // bufio.Scanner. Remember to check scanner.Err() — Scan() returning false
 // means "end of input OR something broke", and only Err() tells you which.
+func CountLines(r io.Reader) (int, error) {
+	scanner := bufio.NewScanner(r)
+	lines := 0
+	for scanner.Scan() {
+		lines++
+	}
+
+	if err := scanner.Err(); err != nil {
+		return lines, err
+	}
+	return lines, nil
+}
 
 // TODO 3: write `func ReadLines(r io.Reader) ([]string, error)` returning
 // every line, without its newline.
+func ReadLines(r io.Reader) ([]string, error) {
+	lines := []string{}
+
+	scanner := bufio.NewScanner(r)
+
+	for scanner.Scan() {
+		text := scanner.Text()
+		lines = append(lines, text)
+	}
+
+	if err := scanner.Err(); err != nil {
+		return []string{}, err
+	}
+
+	return lines, nil
+}
 
 // TODO 4: write `type UpperReader struct { R io.Reader }` implementing
 // io.Reader, uppercasing ASCII letters as they stream past. Uppercase only
 // the n bytes you actually read, not the whole buffer.
+type UpperReader struct {
+	R io.Reader
+}
+
+func IsLowerCase(b byte) bool {
+	return b >= 97 && b <= 122
+}
+
+func (ur *UpperReader) Read(p []byte) (int, error) {
+	n, err := ur.R.Read(p)
+
+	if err != nil {
+		return n, err
+	}
+
+	for i := range n {
+		if IsLowerCase(p[i]) {
+			p[i] = p[i] - 32
+		}
+	}
+
+	return n, err
+}
 
 // TODO 5: write `func Duplicate(src io.Reader, a, b io.Writer) (int64, error)`
 // that streams src into BOTH writers in one pass, returning the byte count.
 // io.MultiWriter turns two writers into one.
+func Duplicate(src io.Reader, a, b io.Writer) (int64, error) {
+	return io.Copy(io.MultiWriter(a, b), src)
+}
 
 // TODO 6: write `func WriteLines(w io.Writer, lines []string) error` using a
 // bufio.Writer, one line each with a trailing newline. Flush before returning
 // and return the Flush error if there is one — the whole point of this TODO
 // is that forgetting Flush silently writes nothing.
+func WriteLines(w io.Writer, lines []string) error {
+	bufWriter := bufio.NewWriter(w)
+
+	for _, line := range lines {
+		line = line + "\n"
+		bufWriter.Write(([]byte)(line))
+	}
+
+	return bufWriter.Flush()
+}
 
 func main() {
 	// TODO 7: count the lines in a strings.NewReader with three lines, print it.
+	line := "abc"
+	sReader := strings.NewReader(line)
+	buffer := make([]byte, 3)
+	n, _ := sReader.Read(buffer)
 
+	fmt.Println(n)
 	// TODO 8: wrap a bytes.Buffer in a CountingWriter, write "hello world"
 	// through it, print the buffer contents and the count.
+	buf := &bytes.Buffer{}
+	cw := CountingWriter{W: buf}
 
+	n, _ = cw.Write([]byte("hello world"))
+	s := buf.String()
+	fmt.Println(s, n)
 	// TODO 9: io.ReadAll an UpperReader over "go is fun" and print the result.
-
+	ur := UpperReader{R: strings.NewReader("go is fun")}
+	upperstring, _ := io.ReadAll(&ur)
+	fmt.Println(string(upperstring))
 	// TODO 10: Duplicate "stream me" into two buffers, print both plus the
 	// number of bytes copied.
-
+	buf1 := bytes.NewBuffer([]byte{})
+	buf2 := bytes.NewBuffer([]byte{})
+	readn, _ := Duplicate(strings.NewReader("stream me"), buf1, buf2)
+	fmt.Println(buf1.String(), buf2.String(), readn)
 	// TODO 11: WriteLines three lines into a buffer and print how many bytes
 	// ended up there.
-
-	fmt.Print()
+	buf3 := bytes.NewBuffer([]byte{})
+	WriteLines(buf3, []string{"line1", "line2", "line3"})
+	fmt.Println(buf3.Len())
 }
 
 // EXPECTED OUTPUT:

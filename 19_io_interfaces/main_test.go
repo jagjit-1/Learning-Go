@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -351,12 +352,21 @@ func TestOutput(t *testing.T) {
 		{regexp.MustCompile(`(?m)^hello world 11$`), "TODO 8", "\"hello world 11\""},
 		{regexp.MustCompile(`(?m)^GO IS FUN$`), "TODO 9", "GO IS FUN"},
 		{regexp.MustCompile(`(?m)^stream me stream me 9$`), "TODO 10", "\"stream me stream me 9\""},
-		{regexp.MustCompile(`(?m)^17$`), "TODO 11", "17 bytes written"},
 	}
 	for _, c := range checks {
 		if !c.re.MatchString(out) {
 			t.Errorf("%s: expected %s.\n  your output was:\n%s", c.todo, c.want, indent(out))
 		}
+	}
+
+	// TODO 11's byte count depends on whatever lines you chose to write, so
+	// there's no fixed number to match — just check the last line printed is
+	// a positive integer (i.e. something actually got written).
+	trimmed := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	last := trimmed[len(trimmed)-1]
+	if n, err := strconv.Atoi(strings.TrimSpace(last)); err != nil || n <= 0 {
+		t.Errorf("TODO 11: expected the last printed line to be a positive byte count, got %q.\n"+
+			"  your output was:\n%s", last, indent(out))
 	}
 }
 
