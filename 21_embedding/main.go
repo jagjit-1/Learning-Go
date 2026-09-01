@@ -1,6 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+)
 
 // ============================================================
 // CONCEPT: embedding — composition that looks like inheritance
@@ -74,55 +79,140 @@ import "fmt"
 
 // TODO 1: define `type Animal struct { Name string }` with three VALUE-receiver
 // methods:
-//   Describe() string  -> "animal <Name>"
-//   GetName() string   -> the Name
-//   Intro() string     -> "I am " + a.Describe()
+//
+//	Describe() string  -> "animal <Name>"
+//	GetName() string   -> the Name
+//	Intro() string     -> "I am " + a.Describe()
+type Animal struct {
+	Name string
+}
+
+func (a Animal) Describe() string {
+	return "animal " + a.Name
+}
+
+func (a Animal) GetName() string {
+	return a.Name
+}
+
+func (a Animal) Intro() string {
+	return "I am " + a.Describe()
+}
 
 // TODO 2: define `type Dog struct` embedding Animal plus a `Breed string`
 // field, and give Dog its own `Describe() string` returning
 // "dog <Name> (<Breed>)". Note you can reach Name directly — it's promoted.
+type Dog struct {
+	Animal
+	Breed string
+}
+
+func (d Dog) Describe() string {
+	return fmt.Sprintf("dog %s (%s)", d.Name, d.Breed)
+}
 
 // TODO 3: define three interfaces, using interface embedding for the third:
-//   type Namer interface { GetName() string }
-//   type Describer interface { Describe() string }
-//   type Entity interface { Namer; Describer }
+//
+//	type Namer interface { GetName() string }
+//	type Describer interface { Describe() string }
+//	type Entity interface { Namer; Describer }
+//
 // Then write `func Explain(e Entity) string` returning
 // "<GetName()>: <Describe()>". Called with a Dog this DOES get Dog's
 // Describe — which is the whole point of using an interface rather than
 // relying on embedding.
+type Namer interface {
+	GetName() string
+}
+
+type Describer interface {
+	Describe() string
+}
+
+type Entity interface {
+	Namer
+	Describer
+}
+
+func Explain(e Entity) string {
+	return e.GetName() + ": " + e.Describe()
+}
 
 // TODO 4: define `type LoggingWriter struct` embedding io.Writer plus a
 // `Records []string` field, with a pointer-receiver `Write` that appends the
 // written text to Records and then delegates to the embedded Writer.
+type LoggingWriter struct {
+	io.Writer
+	Records []string
+}
+
+func (lw *LoggingWriter) Write(p []byte) (int, error) {
+	lw.Records = append(lw.Records, string(p))
+	return lw.Writer.Write(p)
+}
 
 // TODO 5: field shadowing. Define
-//   type Base struct { ID int }
-//   type Wrapper struct { Base; ID string }
+//
+//	type Base struct { ID int }
+//	type Wrapper struct { Base; ID string }
+//
 // and write `func IDs(w Wrapper) (string, int)` returning the outer ID and
 // the inner one. Work out which name refers to which before you run it.
+type Base struct{ ID int }
+type Wrapper struct {
+	Base
+	ID string
+}
+
+func IDs(w Wrapper) (string, int) {
+	return w.ID, w.Base.ID
+}
 
 // TODO 6: define `type Person struct { Name string; Email string }` with json
 // tags "name" and "email", and `type Employee struct` embedding Person with a
 // `Salary int` tagged "salary". Write `func EmployeeJSON(e Employee) (string, error)`.
 // Predict the shape of the JSON before you run it.
+type Person struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+}
+
+type Employee struct {
+	Person
+	Salary int `json:"salary"`
+}
+
+func EmployeeJSON(e Employee) (string, error) {
+	p, err := json.Marshal(e)
+
+	return string(p), err
+}
 
 func main() {
 	// TODO 7: build a Dog and print its promoted Name, then Describe().
-
+	d := Dog{Animal: Animal{Name: "Rex"}, Breed: "Lab"}
+	fmt.Println(d.Name, d.Describe())
 	// TODO 8: print dog.Intro() and then dog.Animal.Describe(). Notice they
 	// agree with each other and NOT with dog.Describe() — that's the missing
 	// virtual dispatch.
-
+	fmt.Println(d.Intro())
+	fmt.Println(d.Animal.Describe())
 	// TODO 9: print Explain(dog).
-
+	fmt.Println(Explain(d))
 	// TODO 10: wrap a bytes.Buffer in a LoggingWriter, write two strings
 	// through it, then print the buffer contents and len(Records).
-
+	buffer := bytes.NewBuffer([]byte{})
+	lw := LoggingWriter{Writer: buffer}
+	lw.Write([]byte("hello"))
+	lw.Write([]byte(" world"))
+	fmt.Println(buffer.String(), len(lw.Records))
 	// TODO 11: print IDs of a Wrapper built with both IDs set.
-
+	w := Wrapper{Base: Base{ID: 7}, ID: "outer"}
+	fmt.Println(w.ID, w.Base.ID)
 	// TODO 12: print EmployeeJSON for an Employee.
-
-	fmt.Print()
+	emp := Employee{Person: Person{Name: "Ada", Email: "ada@example.com"}, Salary: 100}
+	jemp, _ := EmployeeJSON(emp)
+	fmt.Println(jemp)
 }
 
 // EXPECTED OUTPUT:
