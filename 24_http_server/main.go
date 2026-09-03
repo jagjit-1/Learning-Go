@@ -1,6 +1,14 @@
 package main
 
-import "fmt"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+)
 
 // ============================================================
 // CONCEPT: net/http as a server
@@ -93,55 +101,152 @@ import "fmt"
 
 // TODO 1: write `func HealthHandler(w http.ResponseWriter, r *http.Request)`
 // answering 200 with the body "ok".
+func HealthHandler(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok"))
+}
 
 // TODO 2: define `type Info struct { Service string `json:"service"`;
 // Version string `json:"version"` }` and write `func InfoHandler` returning
 // Info{"learning-go", "1.0"} as JSON with a Content-Type of
 // "application/json". Set the header BEFORE writing anything.
+type Info struct {
+	Service string `json:"service"`
+	Version string `json:"version"`
+}
+
+func InfoHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	body, _ := json.Marshal(Info{Service: "learning-go", Version: "1.0"})
+	w.Write(body)
+}
 
 // TODO 3: write `func GreetHandler` for the route "GET /greet/{name}",
 // answering 200 with "Hello, <name>!". Read the wildcard with r.PathValue.
 // If the name is empty, answer 400.
+func GreetHandler(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+
+	if len(name) == 0 {
+		w.WriteHeader(http.StatusBadRequest)
+	} else {
+		fmt.Fprintf(w, "Hello, %s!", name)
+	}
+}
 
 // TODO 4: define
-//   type EchoRequest struct { Message string `json:"message"` }
-//   type EchoResponse struct { Echo string `json:"echo"` }
+//
+//	type EchoRequest struct { Message string `json:"message"` }
+//	type EchoResponse struct { Echo string `json:"echo"` }
+//
 // and write `func EchoHandler` for "POST /echo": decode the body, answer 200
 // with the message echoed back as JSON. Malformed JSON or an empty message
 // is a 400. Remember to return after writing an error.
+type EchoRequest struct {
+	Message string `json:"message"`
+}
+type EchoResponse struct {
+	Echo string `json:"echo"`
+}
+
+func EchoHandler(w http.ResponseWriter, r *http.Request) {
+	reqByte, _ := io.ReadAll(r.Body)
+	reqTyp := EchoRequest{}
+	err := json.Unmarshal(reqByte, &reqTyp)
+
+	if err != nil || len(reqTyp.Message) == 0 {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+
+	resp := EchoResponse{Echo: reqTyp.Message}
+	respByte, _ := json.Marshal(resp)
+	w.Write(respByte)
+}
 
 // TODO 5: define `type StatusRecorder struct` embedding http.ResponseWriter
 // with a `Status int` field and a pointer-receiver `WriteHeader` that records
 // the code and passes it on.
+type StatusRecorder struct {
+	http.ResponseWriter
+	Status int
+}
+
+func (sr *StatusRecorder) WriteHeader(code int) {
+	sr.Status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
 
 // TODO 6: write
-//   func RecordingMiddleware(next http.Handler, record func(method, path string, status int)) http.Handler
+//
+//	func RecordingMiddleware(next http.Handler, record func(method, path string, status int)) http.Handler
+//
 // that wraps w in a StatusRecorder (defaulting Status to 200), calls next,
 // then invokes record with the method, the path and the final status.
+func RecordingMiddleware(next http.Handler, record func(method, path string, status int)) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sr := StatusRecorder{ResponseWriter: w}
+		sr.Status = 200
+		next.ServeHTTP(&sr, r)
+		record(r.Method, r.URL.Path, sr.Status)
+	})
+}
 
 // TODO 7: write
-//   func NewRouter(record func(method, path string, status int)) http.Handler
+//
+//	func NewRouter(record func(method, path string, status int)) http.Handler
+//
 // building a ServeMux with:
-//   GET  /health      -> HealthHandler
-//   GET  /info        -> InfoHandler
-//   GET  /greet/{name} -> GreetHandler
-//   POST /echo        -> EchoHandler
+//
+//	GET  /health      -> HealthHandler
+//	GET  /info        -> InfoHandler
+//	GET  /greet/{name} -> GreetHandler
+//	POST /echo        -> EchoHandler
+//
 // and returning it wrapped in RecordingMiddleware.
+func NewRouter(record func(method, path string, status int)) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /health", HealthHandler)
+	mux.HandleFunc("GET /info", InfoHandler)
+	mux.HandleFunc("GET /greet/{name}", GreetHandler)
+	mux.HandleFunc("POST /echo", EchoHandler)
+
+	return RecordingMiddleware(mux, record)
+}
 
 func main() {
 	// TODO 8: build a router with a record func that appends to a slice, put
 	// it behind httptest.NewServer, and defer srv.Close().
+	recordedCalls := []int{}
+	record := func(method, path string, status int) {
+		recordedCalls = append(recordedCalls, status)
+	}
 
+	server := httptest.NewServer(NewRouter(record))
+	defer server.Close()
+	client := &http.Client{}
 	// TODO 9: GET /health and print the body.
-
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/health", nil)
+	resp, _ := client.Do(req)
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(body))
 	// TODO 10: GET /greet/Jagjit and print the body.
-
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/greet/Jagjit", nil)
+	resp, _ = client.Do(req)
+	body, _ = io.ReadAll(resp.Body)
+	fmt.Println(string(body))
 	// TODO 11: POST /echo with `{"message":"hi"}` and print the response body.
-
+	reqBody, _ := json.Marshal(EchoRequest{Message: "hi"})
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/echo", bytes.NewReader(reqBody))
+	resp, _ = client.Do(req)
+	body, _ = io.ReadAll(resp.Body)
+	fmt.Println(string(body))
 	// TODO 12: GET /nope and print the status code, then print how many
 	// requests your middleware recorded.
-
-	fmt.Print()
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/nope", nil)
+	resp, _ = client.Do(req)
+	fmt.Println(resp.StatusCode)
+	fmt.Println(len(recordedCalls))
 }
 
 // EXPECTED OUTPUT:
