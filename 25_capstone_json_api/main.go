@@ -1,6 +1,19 @@
 package main
 
-import "fmt"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+)
 
 // ============================================================
 // CONCEPT: nothing new — Set B all at once
@@ -87,6 +100,219 @@ import "fmt"
 // Use *ValidationError with errors.As to decide between 400 and 500 rather
 // than matching on message text — that's what Exercise 8 was for.
 
+type Task struct {
+	ID    int    `json:"id"`
+	Title string `json:"title"`
+	Done  bool   `json:"Done"`
+}
+
+type ErrorResponse struct {
+	Error string `json:"error"`
+}
+
+type ValidationError struct {
+	Field string
+	Msg   string
+}
+
+func (ve *ValidationError) Error() string {
+	return fmt.Sprintf("%s: %s", ve.Field, ve.Msg)
+}
+
+type Store struct {
+	GlobalID int
+	Items    map[int]Task
+	Mut      sync.RWMutex
+}
+
+func NewStore() *Store {
+	return &Store{Items: map[int]Task{}, GlobalID: 1}
+}
+
+func (s *Store) Delete(id int) bool {
+	s.Mut.Lock()
+	defer s.Mut.Unlock()
+
+	_, ok := s.Items[id]
+
+	if !ok {
+		return false
+	}
+
+	delete(s.Items, id)
+	return true
+}
+
+var TaskNotFoundError error = errors.New("Task not found")
+
+func (s *Store) Update(id int, title string, done bool) (Task, error) {
+	title = strings.TrimSpace(title)
+	if len(title) == 0 || len(title) > 200 {
+		return Task{}, &ValidationError{Field: "Title", Msg: "Invalid length"}
+	}
+
+	s.Mut.Lock()
+	defer s.Mut.Unlock()
+	_, ok := s.Items[id]
+
+	if !ok {
+		return Task{}, TaskNotFoundError
+	}
+	updatedTask := Task{ID: id, Title: title, Done: done}
+	s.Items[id] = updatedTask
+	return updatedTask, nil
+
+}
+
+func (s *Store) Get(id int) (Task, bool) {
+	s.Mut.RLock()
+	defer s.Mut.RUnlock()
+	i, ok := s.Items[id]
+	return i, ok
+}
+
+func (s *Store) Create(title string) (Task, error) {
+	title = strings.TrimSpace(title)
+	if len(title) == 0 || len(title) > 200 {
+		return Task{}, &ValidationError{Field: "Title", Msg: "Invalid length"}
+	}
+
+	s.Mut.Lock()
+	defer s.Mut.Unlock()
+	newTask := Task{ID: s.GlobalID, Title: title}
+	s.Items[s.GlobalID] = newTask
+	s.GlobalID++
+	return newTask, nil
+}
+
+func (s *Store) List() []Task {
+	s.Mut.RLock()
+	result := []Task{}
+	for _, task := range s.Items {
+		result = append(result, task)
+	}
+	s.Mut.RUnlock()
+
+	slices.SortFunc(result, func(a Task, b Task) int { return a.ID - b.ID })
+	return result
+}
+
+func WriteJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(body)
+}
+
+func WriteError(w http.ResponseWriter, status int, msg string) {
+	WriteJSON(w, status, ErrorResponse{Error: msg})
+}
+
+func WriteStoreError(w http.ResponseWriter, err error) {
+	var ve *ValidationError
+	switch {
+	case errors.As(err, &ve):
+		WriteError(w, http.StatusBadRequest, ve.Error())
+	case errors.Is(err, TaskNotFoundError):
+		WriteError(w, http.StatusNotFound, "Task not found")
+	default:
+		WriteError(w, http.StatusInternalServerError, "Internal server error")
+	}
+}
+
+func (s *Store) UpdateTaskByIDHandler(w http.ResponseWriter, r *http.Request) {
+	rawID := r.PathValue("id")
+	id, err := strconv.Atoi(rawID)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	task := Task{}
+	reqBody, _ := io.ReadAll(r.Body)
+	if err := json.Unmarshal(reqBody, &task); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	updatedTask, err := s.Update(id, task.Title, task.Done)
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, updatedTask)
+}
+
+func (s *Store) DeleteTaskByIDHandler(w http.ResponseWriter, r *http.Request) {
+	rawID := r.PathValue("id")
+	id, err := strconv.Atoi(rawID)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	found := s.Delete(id)
+	if !found {
+		WriteStoreError(w, TaskNotFoundError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Store) GetTaskByIDHandler(w http.ResponseWriter, r *http.Request) {
+	rawID := r.PathValue("id")
+	id, err := strconv.Atoi(rawID)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid ID")
+		return
+	}
+
+	task, found := s.Get(id)
+
+	if !found {
+		WriteStoreError(w, TaskNotFoundError)
+		return
+	}
+
+	WriteJSON(w, http.StatusOK, task)
+}
+
+func (s *Store) CreateTaskHandler(w http.ResponseWriter, r *http.Request) {
+	byBody, _ := io.ReadAll(r.Body)
+	taskBody := Task{}
+
+	if err := json.Unmarshal(byBody, &taskBody); err != nil {
+		WriteError(w, http.StatusBadRequest, "Invalid JSON")
+		return
+	}
+
+	createdTask, err := s.Create(taskBody.Title)
+
+	if err != nil {
+		WriteStoreError(w, err)
+		return
+	}
+	WriteJSON(w, http.StatusCreated, createdTask)
+}
+
+func (s *Store) GetAllTasksHandler(w http.ResponseWriter, r *http.Request) {
+	tasks := s.List()
+	WriteJSON(w, http.StatusOK, tasks)
+}
+
+func NewAPI(s *Store) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /tasks", s.GetAllTasksHandler)
+	mux.HandleFunc("POST /tasks", s.CreateTaskHandler)
+	mux.HandleFunc("PUT /tasks/{id}", s.UpdateTaskByIDHandler)
+	mux.HandleFunc("GET /tasks/{id}", s.GetTaskByIDHandler)
+	mux.HandleFunc("DELETE /tasks/{id}", s.DeleteTaskByIDHandler)
+
+	return mux
+}
+
 func main() {
 	// TODO: build a Store, wrap it in NewAPI, serve it with httptest.NewServer,
 	// then drive it: create two tasks, list them, fetch one, update it, delete
@@ -99,8 +325,60 @@ func main() {
 	//   the status code from the update             (200)
 	//   the status code from the delete             (204)
 	//   the status code for a task that isn't there (404)
+	store := NewStore()
+	handler := NewAPI(store)
+	server := httptest.NewServer(handler)
 
-	fmt.Print()
+	client := &http.Client{}
+
+	// CREATE 2 TASKS
+	reqBody, _ := json.Marshal(Task{Title: "write Go", Done: false})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/tasks", bytes.NewReader(reqBody))
+	res, _ := client.Do(req)
+
+	fmt.Println(res.StatusCode)
+
+	reqBody, _ = json.Marshal(Task{Title: "write Go", Done: false})
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL+"/tasks", bytes.NewReader(reqBody))
+	res, _ = client.Do(req)
+
+	// GET ALL TASKS
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/tasks", nil)
+	res, _ = client.Do(req)
+
+	resBody, _ := io.ReadAll(res.Body)
+	allTasks := []Task{}
+	json.Unmarshal(resBody, &allTasks)
+
+	fmt.Println(len(allTasks))
+
+	// GET TASK BY ID
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/tasks"+"/1", nil)
+	res, _ = client.Do(req)
+	task := Task{}
+
+	resBody, _ = io.ReadAll(res.Body)
+	json.Unmarshal(resBody, &task)
+	fmt.Println(task.Title)
+
+	// UPDATE TASK BY ID
+	reqBody, _ = json.Marshal(Task{Title: "write Go again", Done: true})
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodPut, server.URL+"/tasks/1", bytes.NewReader(reqBody))
+	res, _ = client.Do(req)
+
+	fmt.Println(res.StatusCode)
+
+	// DELETE TASK BY ID
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodDelete, server.URL+"/tasks/2", nil)
+	res, _ = client.Do(req)
+
+	fmt.Println(res.StatusCode)
+
+	// FETCH INVALID ID TASK
+	req, _ = http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/tasks/2", nil)
+	res, _ = client.Do(req)
+
+	fmt.Println(res.StatusCode)
 }
 
 // EXPECTED OUTPUT:
